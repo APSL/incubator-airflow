@@ -7,9 +7,9 @@
 # to you under the Apache License, Version 2.0 (the
 # "License"); you may not use this file except in compliance
 # with the License.  You may obtain a copy of the License at
-# 
+#
 #   http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing,
 # software distributed under the License is distributed on an
 # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -23,6 +23,7 @@ import os
 
 from celery import Celery
 from celery import states as celery_states
+from celery.exceptions import MaxRetriesExceededError
 
 from airflow.config_templates.default_celery import DEFAULT_CELERY_CONFIG
 from airflow.exceptions import AirflowException
@@ -54,6 +55,8 @@ app = Celery(
 def execute_command(command):
     log = LoggingMixin().log
     log.info("Executing command in Celery: %s", command)
+    countdown = configuration.get('celery', 'CELERY_COUNTDOWN')
+    max_retries = configuration.get('celery', 'CELERY_MAX_RETRIES')
     env = os.environ.copy()
     try:
         subprocess.check_call(command, shell=True, stderr=subprocess.STDOUT,
@@ -61,8 +64,14 @@ def execute_command(command):
     except subprocess.CalledProcessError as e:
         log.exception('execute_command encountered a CalledProcessError')
         log.error(e.output)
-
-        raise AirflowException('Celery command failed')
+        raise execute_command.retry(
+            countdown=countdown, max_retries=max_retries, exc=e
+        )
+    except MaxRetriesExceededError as e:
+        raise AirflowException(
+            'Celery command failed after {retries} retries'.format(
+                retries=execute_command.request.retries)
+        )
 
 
 class CeleryExecutor(BaseExecutor):
